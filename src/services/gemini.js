@@ -1,13 +1,14 @@
 /**
  * gemini.js
- * Calls the real Google Gemini API to extract structured accident details
- * from a scene description or voice transcript.
+ * Calls the Gemini API to extract structured accident details.
  *
- * Features:
- *  - Tiered model fallback (3 models before giving up)
- *  - 8-second timeout guard (fails-safe to mock data)
- *  - Schema validation (validateReport) — no field is ever undefined
+ * Priority chain:
+ *  1. Firebase Cloud Function → Vertex AI (server-side, most secure)
+ *  2. Direct Gemini REST API — tiered model fallback (3 models)
+ *  3. Validated mock data (always produces usable output)
  */
+
+import { analyzeViaCloudFunction } from './cloudFunctionService';
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
 const AI_TIMEOUT_MS = 8000;
@@ -109,6 +110,17 @@ export const extractAccidentDetails = async (sceneInput) => {
     ]
   });
 
+  const sceneDescription = sceneInput ||
+    'Motorcycle crashed into road divider on wet road. Rider bleeding and unresponsive. No helmet visible.';
+
+  // ── Priority 1: Firebase Cloud Function → Vertex AI (server-side) ──────────
+  const cfResult = await analyzeViaCloudFunction(sceneDescription);
+  if (cfResult) {
+    console.log('[Gemini] ✅ Response via Cloud Function (Vertex AI)');
+    return validateReport(cfResult);
+  }
+
+  // ── Priority 2: Direct Gemini REST API — tiered model fallback ─────────────
   if (!GEMINI_API_KEY) {
     console.warn('[Gemini] No API key — using mock data.');
     await new Promise(resolve => setTimeout(resolve, 3000));

@@ -520,6 +520,33 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onShare, onFirs
           </div>
         </div>
 
+        {/* 🗺️ Google Maps — Live Accident Scene Location */}
+        <div className="map-section">
+          <h3 style={{ marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <MapPin size={18} color="var(--accent-cyan)" aria-hidden="true" />
+            Accident Scene Location
+          </h3>
+          <div className="map-container glass" aria-label="Google Map showing the accident location">
+            {location && location !== 'Location Unavailable' && location !== 'Detecting...' ? (
+              <iframe
+                title="Accident Scene Location"
+                width="100%"
+                height="220"
+                frameBorder="0"
+                style={{ borderRadius: '12px', border: 'none' }}
+                referrerPolicy="no-referrer-when-downgrade"
+                src={`https://www.google.com/maps?q=${encodeURIComponent(location)}&output=embed&zoom=15`}
+                loading="lazy"
+              />
+            ) : (
+              <div className="map-placeholder">
+                <Navigation size={32} color="var(--accent-yellow)" />
+                <p>GPS coordinates unavailable — location logged as text</p>
+              </div>
+            )}
+          </div>
+        </div>
+
         <div className="vehicles-list">
           <h3>Involved Vehicles</h3>
           <div className="v-grid">
@@ -621,6 +648,9 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onShare, onFirs
       .save-status { padding: 8px 12px; border-radius: 8px; font-size: 0.8rem; font-weight: 600; text-align: center; }
       .save-status.saved { background: rgba(0, 242, 255, 0.1); color: var(--accent-cyan); border: 1px solid rgba(0, 242, 255, 0.3); }
       .save-status.pending { background: rgba(255, 214, 0, 0.1); color: var(--accent-yellow); border: 1px solid rgba(255, 214, 0, 0.3); }
+      .map-section { margin-top: 24px; }
+      .map-container { padding: 12px; border-radius: 16px; min-height: 220px; display: flex; flex-direction: column; justify-content: center; }
+      .map-placeholder { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; color: var(--text-secondary); gap: 12px; height: 100%; padding: 40px; }
     `}</style>
   </motion.div>
 )
