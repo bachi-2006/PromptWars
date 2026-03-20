@@ -1,0 +1,28 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── REPORTS ───────────────────────────────────────────────
+    match /reports/{reportId} {
+      // Anonymous or signed-in users can create reports freely.
+      // Auth is NOT required to write (session fallback handled in code).
+      allow create: if true;
+
+      // Only the owning user can read or update their own report.
+      // Works for both anonymous UIDs and future linked accounts.
+      allow read, update: if request.auth != null
+                          && request.auth.uid == resource.data.user_id;
+
+      // Nobody (including the owner) can delete a report (audit trail).
+      allow delete: if false;
+    }
+
+    // ─── USERS ─────────────────────────────────────────────────
+    match /users/{userId} {
+      // Users can only read and write their own profile document.
+      allow read, write: if request.auth != null
+                         && request.auth.uid == userId;
+    }
+
+  }
+}

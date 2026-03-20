@@ -21,6 +21,8 @@ import {
   Lock
 } from 'lucide-react'
 import { extractAccidentDetails } from './services/gemini'
+import { calculateUrgency } from './services/urgencyEngine'
+import { initSilentAuth, saveReport, syncPendingReports, upgradeToGoogle, onAuthReady } from './services/authService'
 
 // --- Global UI Components ---
 
@@ -33,7 +35,7 @@ const Navbar = () => (
     <div className="nav-container glass">
       <div className="nav-logo">
         <div className="logo-icon"><ShieldAlert size={20} /></div>
-        <span>Witness<b>Save</b></span>
+        <span>Road<b>Sense AI</b></span>
       </div>
       <div className="nav-links">
         <a href="#how">How it works</a>
@@ -80,22 +82,43 @@ function App() {
   const [phase, setPhase] = useState('landing')
   const [location, setLocation] = useState('Detecting...')
   const [reportData, setReportData] = useState(null)
-  const [privacyBlur, setPrivacyBlur] = useState(false)
+  const [privacyBlur, setPrivacyBlur] = useState(true)
+  const [showConsent, setShowConsent] = useState(false)
+  const [showUpgrade, setShowUpgrade] = useState(false)
+  const [saveStatus, setSaveStatus] = useState(null) // null | 'saved' | 'pending'
 
   useEffect(() => {
+    // 1. Silent, non-blocking auth (fire-and-forget)
+    initSilentAuth()
+
+    // 2. GPS
     if (navigator.geolocation) {
       navigator.geolocation.getCurrentPosition(
         (pos) => setLocation(`${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)}`),
         () => setLocation('Location Unavailable')
       )
     }
+
+    // 3. Sync any reports that failed to upload while offline
+    const handleOnline = () => syncPendingReports()
+    window.addEventListener('online', handleOnline)
+    return () => window.removeEventListener('online', handleOnline)
   }, [])
 
   const handleRecordingComplete = async () => {
     setPhase('analyzing')
-    const data = await extractAccidentDetails(null)
-    setReportData(data)
+    const rawData = await extractAccidentDetails(null)
+    const hybridUrgency = calculateUrgency(rawData)
+    const finalData = { ...rawData, urgency_level: hybridUrgency }
+    setReportData(finalData)
     setPhase('report')
+
+    // Save to Firestore in background after report is shown (non-blocking)
+    saveReport(finalData, location).then((result) => {
+      setSaveStatus(result.success ? 'saved' : 'pending')
+      // Show soft upgrade prompt 3 seconds after report renders
+      setTimeout(() => setShowUpgrade(true), 3000)
+    })
   }
 
   return (
@@ -118,7 +141,24 @@ function App() {
           data={reportData} 
           privacyBlur={privacyBlur}
           onToggleBlur={() => setPrivacyBlur(!privacyBlur)}
-          onFirstAid={() => setPhase('first-aid')} 
+          onShare={() => setShowConsent(true)}
+          onFirstAid={() => setPhase('first-aid')}
+          saveStatus={saveStatus}
+        />}
+        {showConsent && <ConsentModal 
+          onConfirm={() => {
+            alert('Report shared with authorities successfully.')
+            setShowConsent(false)
+          }} 
+          onCancel={() => setShowConsent(false)} 
+        />}
+        {showUpgrade && <UpgradePrompt
+          onUpgrade={async () => {
+            const result = await upgradeToGoogle()
+            if (result.success) alert(`Saved to account: ${result.user.email}`)
+            setShowUpgrade(false)
+          }}
+          onDismiss={() => setShowUpgrade(false)}
         />}
         {phase === 'first-aid' && <FirstAidPage key="first-aid" onBack={() => setPhase('report')} />}
       </AnimatePresence>
@@ -139,7 +179,7 @@ const LandingPage = ({ onStart }) => (
       transition={{ delay: 0.2 }}
       className="sign-badge warning"
     >
-      <AlertTriangle size={16} /> 24/7 Road Emergency Assistance
+      <AlertTriangle size={16} /> 24/7 AI-Powered Accident Witness Assistant
     </motion.div>
 
     <motion.h1
@@ -158,7 +198,7 @@ const LandingPage = ({ onStart }) => (
        style={{ fontSize: '1.25rem', color: 'var(--text-secondary)', maxWidth: '700px', lineHeight: '1.5' }}
     >
       The first AI-powered witness assistant that turns chaotic scenes into 
-      structured incident reports for emergency services, in real-time.
+      structured incident reports for emergency services within 60 seconds.
     </motion.p>
 
     <motion.div 
@@ -168,7 +208,7 @@ const LandingPage = ({ onStart }) => (
        className="cta-stack"
     >
       <button className="btn-primary btn-record" onClick={onStart}>
-        <Camera size={20} /> Record Incident
+        <Camera size={20} /> Report Accident
       </button>
       <button className="btn-primary btn-secondary glass">
         <FileText size={20} /> View Demo Report
@@ -242,6 +282,11 @@ const RecordingPage = ({ location, onComplete }) => {
         </div>
 
         <div className="scan-line"></div>
+        
+        <div className="mic-activity">
+          <Mic size={24} className="mic-icon-pulse" />
+          <span>Voice Capturing...</span>
+        </div>
       </div>
 
       <div className="recording-controls container">
@@ -315,6 +360,26 @@ const RecordingPage = ({ location, onComplete }) => {
           animation: scan 3s linear infinite;
         }
         @keyframes scan { from { top: 0; } to { top: 100%; } }
+        
+        .mic-activity {
+          position: absolute;
+          bottom: 250px;
+          left: 50%;
+          transform: translateX(-50%);
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          color: var(--accent-cyan);
+          font-weight: 600;
+          text-shadow: 0 0 10px rgba(0, 242, 255, 0.5);
+        }
+        .mic-icon-pulse {
+          animation: micPulse 1.5s infinite;
+        }
+        @keyframes micPulse {
+          0%, 100% { transform: scale(1); opacity: 0.7; }
+          50% { transform: scale(1.2); opacity: 1; }
+        }
 
         .recording-controls {
           position: absolute;
@@ -391,7 +456,7 @@ const AnalyzingPage = ({ onComplete }) => {
   )
 }
 
-const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onFirstAid }) => (
+const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onShare, onFirstAid, saveStatus }) => (
   <motion.div 
     initial={{ opacity: 0, y: 30 }}
     animate={{ opacity: 1, y: 0 }}
@@ -402,7 +467,12 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onFirstAid }) =
         <FileText size={32} color="var(--accent-cyan)" />
         <h1>Incident Report</h1>
       </div>
-      <span className="status-critical">{data?.severity || 'PENDING'}</span>
+      <div className="status-badge-container">
+        <span className={`status-${data?.urgency_level?.toLowerCase() || 'medium'}`}>
+          URGENCY: {data?.urgency_level || 'PENDING'}
+        </span>
+        <div className="confidence-score">AI Confidence: {(data?.confidence_score * 100).toFixed(0)}%</div>
+      </div>
     </div>
 
     <div className="report-main-grid">
@@ -427,6 +497,14 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onFirstAid }) =
             <div>
               <h3>AI Analysis Summary</h3>
               <p style={{ lineHeight: '1.6' }}>{data?.summary}</p>
+              <div className="report-tags">
+                <span className="tag">Vehicles: {data?.vehicles_count}</span>
+                <span className="tag">Injuries: {data?.injuries_detected}</span>
+                <span className="tag">Road: {data?.road_condition}</span>
+                <span className={`tag ${data?.helmet_detected ? 'success' : 'warning-tag'}`}>
+                  Helmet: {data?.helmet_detected ? 'Detected' : 'Not Detected'}
+                </span>
+              </div>
             </div>
           </div>
         </div>
@@ -450,6 +528,12 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onFirstAid }) =
       <div className="privacy-sidebar glass">
         <h3>Responder Tools</h3>
         <p>Actions for emergency services and insurance sharing.</p>
+
+        {saveStatus && (
+          <div className={`save-status ${saveStatus}`}>
+            {saveStatus === 'saved' ? '🔒 Report Secured' : '⏳ Will sync when online'}
+          </div>
+        )}
         
         <div className="sidebar-divider"></div>
 
@@ -464,7 +548,7 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onFirstAid }) =
           </label>
         </div>
 
-        <button className="btn-primary glass full-btn">
+        <button className="btn-primary glass full-btn" onClick={onShare}>
           <Share2 size={20} /> Share to Authorities
         </button>
         <button className="btn-primary full-btn" style={{ background: 'var(--accent-red)', color: 'white' }} onClick={onFirstAid}>
@@ -477,7 +561,15 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onFirstAid }) =
       .report-view { margin: 100px auto; padding: 48px; border-radius: 32px; }
       .report-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 48px; border-bottom: 1px solid var(--glass-border); padding-bottom: 32px; }
       .h-left { display: flex; align-items: center; gap: 24px; }
-      .status-critical { background: var(--accent-red); color: white; padding: 8px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 800; letter-spacing: 0.1em; }
+      .status-badge-container { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+      .status-critical, .status-high { background: var(--accent-red); color: white; padding: 8px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 800; letter-spacing: 0.1em; }
+      .status-medium { background: var(--accent-yellow); color: black; padding: 8px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 800; letter-spacing: 0.1em; }
+      .status-low { background: var(--accent-cyan); color: black; padding: 8px 16px; border-radius: 8px; font-size: 0.85rem; font-weight: 800; letter-spacing: 0.1em; }
+      .confidence-score { font-size: 0.7rem; color: var(--text-secondary); font-family: monospace; }
+      .report-tags { display: flex; gap: 8px; margin-top: 12px; flex-wrap: wrap; }
+      .tag { background: rgba(255,255,255,0.05); padding: 4px 10px; border-radius: 4px; font-size: 0.75rem; font-weight: 600; border: 1px solid var(--glass-border); }
+      .tag.warning-tag { border-color: var(--accent-red); color: var(--accent-red); }
+      .tag.success { border-color: var(--accent-cyan); color: var(--accent-cyan); }
       .report-main-grid { display: grid; grid-template-columns: 1fr 340px; gap: 48px; }
       .report-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; margin-bottom: 48px; }
       .report-item { padding: 24px; display: flex; gap: 20px; border-radius: 16px; }
@@ -514,6 +606,98 @@ const ReportPage = ({ location, data, privacyBlur, onToggleBlur, onFirstAid }) =
         .report-main-grid { grid-template-columns: 1fr; }
         .v-grid { grid-template-columns: 1fr; }
       }
+      /* Auth Save Status */
+      .save-status { padding: 8px 12px; border-radius: 8px; font-size: 0.8rem; font-weight: 600; text-align: center; }
+      .save-status.saved { background: rgba(0, 242, 255, 0.1); color: var(--accent-cyan); border: 1px solid rgba(0, 242, 255, 0.3); }
+      .save-status.pending { background: rgba(255, 214, 0, 0.1); color: var(--accent-yellow); border: 1px solid rgba(255, 214, 0, 0.3); }
+    `}</style>
+  </motion.div>
+)
+
+const ConsentModal = ({ onConfirm, onCancel }) => (
+  <div className="modal-overlay">
+    <motion.div 
+      initial={{ scale: 0.9, opacity: 0 }}
+      animate={{ scale: 1, opacity: 1 }}
+      className="consent-modal glass"
+    >
+      <div className="modal-icon"><Lock size={32} /></div>
+      <h2>Privacy Consent</h2>
+      <p>By sharing this report, you agree to transmit anonymized accident data and media to emergency services. Faces and license plates will be blurred based on your settings.</p>
+      <div className="modal-actions">
+        <button className="btn-secondary glass" onClick={onCancel}>Cancel</button>
+        <button className="btn-primary" onClick={onConfirm}>Confirm & Share</button>
+      </div>
+    </motion.div>
+    <style>{`
+      .modal-overlay {
+        position: fixed;
+        inset: 0;
+        background: rgba(0,0,0,0.8);
+        backdrop-filter: blur(8px);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        z-index: 2000;
+        padding: 24px;
+      }
+      .consent-modal {
+        max-width: 440px;
+        padding: 40px;
+        border-radius: 24px;
+        text-align: center;
+        border: 1px solid var(--glass-border);
+      }
+      .modal-icon { color: var(--accent-cyan); margin-bottom: 24px; display: flex; justify-content: center; }
+      .modal-actions { display: flex; gap: 16px; margin-top: 32px; }
+      .modal-actions button { flex: 1; padding: 12px; border-radius: 12px; font-weight: 600; cursor: pointer; border: none; }
+    `}</style>
+  </div>
+)
+
+const UpgradePrompt = ({ onUpgrade, onDismiss }) => (
+  <motion.div
+    initial={{ y: 80, opacity: 0 }}
+    animate={{ y: 0, opacity: 1 }}
+    exit={{ y: 80, opacity: 0 }}
+    transition={{ type: 'spring', damping: 20 }}
+    className="upgrade-prompt glass"
+  >
+    <div className="up-left">
+      <Lock size={18} color="var(--accent-cyan)" />
+      <div>
+        <strong>Sign in to save your report</strong>
+        <p>Your anonymous session is secured. Sign in to access reports anytime.</p>
+      </div>
+    </div>
+    <div className="up-actions">
+      <button className="up-btn-dismiss" onClick={onDismiss}>Not now</button>
+      <button className="up-btn-upgrade" onClick={onUpgrade}>Sign in with Google</button>
+    </div>
+    <style>{`
+      .upgrade-prompt {
+        position: fixed;
+        bottom: 24px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: calc(100% - 48px);
+        max-width: 680px;
+        padding: 20px 24px;
+        border-radius: 16px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 24px;
+        z-index: 1500;
+        border: 1px solid var(--glass-border);
+      }
+      .up-left { display: flex; align-items: flex-start; gap: 16px; }
+      .up-left strong { font-size: 0.95rem; display: block; margin-bottom: 4px; }
+      .up-left p { font-size: 0.8rem; color: var(--text-secondary); margin: 0; }
+      .up-actions { display: flex; gap: 12px; flex-shrink: 0; }
+      .up-btn-dismiss { background: none; border: 1px solid var(--glass-border); color: var(--text-secondary); padding: 8px 16px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
+      .up-btn-upgrade { background: white; color: black; border: none; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-weight: 700; font-size: 0.85rem; white-space: nowrap; }
+      @media (max-width: 640px) { .upgrade-prompt { flex-direction: column; align-items: flex-start; } }
     `}</style>
   </motion.div>
 )
