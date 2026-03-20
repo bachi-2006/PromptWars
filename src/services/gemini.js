@@ -1,10 +1,16 @@
 /**
  * gemini.js
- * Calls the real Google Gemini API (gemini-2.0-flash) to extract
- * structured accident details from an image or voice transcript.
+ * Calls the real Google Gemini API to extract structured accident details
+ * from a scene description or voice transcript.
+ *
+ * Features:
+ *  - Tiered model fallback (3 models before giving up)
+ *  - 8-second timeout guard (fails-safe to mock data)
+ *  - Schema validation (validateReport) — no field is ever undefined
  */
 
 const GEMINI_API_KEY = import.meta.env.VITE_GEMINI_API_KEY;
+const AI_TIMEOUT_MS = 8000;
 
 // Tiered model fallback: tries premium model first, then falls back to stable flash
 const GEMINI_MODELS = [
@@ -44,12 +50,50 @@ RULES:
 `.trim();
 
 /**
+ * Validates and sanitizes a report object.
+ * Ensures every required field has a safe, defined value.
+ * Never returns undefined — always returns a usable report.
+ */
+export const validateReport = (data = {}) => {
+  const VALID_INJURIES = ['none', 'minor', 'severe', 'critical', 'unknown'];
+  const VALID_URGENCY = ['LOW', 'MEDIUM', 'HIGH', 'CRITICAL'];
+  const VALID_ROAD = ['dry', 'wet', 'icy', 'damaged', 'unknown'];
+
+  return {
+    location: data.location || 'unavailable',
+    time: data.time || new Date().toISOString(),
+    vehicles_count: typeof data.vehicles_count === 'number' ? data.vehicles_count : 0,
+    injuries_detected: VALID_INJURIES.includes(data.injuries_detected) ? data.injuries_detected : 'unknown',
+    helmet_detected: typeof data.helmet_detected === 'boolean' ? data.helmet_detected : false,
+    road_condition: VALID_ROAD.includes(data.road_condition) ? data.road_condition : 'unknown',
+    urgency_level: VALID_URGENCY.includes(data.urgency_level) ? data.urgency_level : 'LOW',
+    confidence_score: typeof data.confidence_score === 'number'
+      ? Math.max(0, Math.min(1, data.confidence_score))
+      : 0.5,
+    summary: typeof data.summary === 'string' && data.summary.length > 0
+      ? data.summary.slice(0, 200)
+      : 'Accident scene captured. Details require manual verification.',
+    vehicles: Array.isArray(data.vehicles) ? data.vehicles : [],
+  };
+};
+
+/**
+ * Wraps a promise with an 8-second timeout.
+ */
+const withTimeout = (promise, ms = AI_TIMEOUT_MS) =>
+  Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('AI_TIMEOUT')), ms)
+    )
+  ]);
+
+/**
  * Calls the Gemini API with a scene description or voice transcript.
- * Falls back to mock data if the API key is missing or the call fails.
+ * Falls back gracefully to mock data if all models fail or timeout.
  */
 export const extractAccidentDetails = async (sceneInput) => {
-  // Mock fallback data (used when API is unavailable)
-  const mockData = {
+  const mockData = validateReport({
     location: "17.4583, 78.3728",
     time: new Date().toISOString(),
     vehicles_count: 2,
@@ -63,11 +107,11 @@ export const extractAccidentDetails = async (sceneInput) => {
       { type: "Motorcycle", color: "Red", plate: "MOTO-789", damage: "Totaled front" },
       { type: "Divider", color: "N/A", plate: "N/A", damage: "Impact point" }
     ]
-  };
+  });
 
   if (!GEMINI_API_KEY) {
     console.warn('[Gemini] No API key — using mock data.');
-    await new Promise(resolve => setTimeout(resolve, 3000)); // Simulate delay
+    await new Promise(resolve => setTimeout(resolve, 3000));
     return mockData;
   }
 
@@ -76,50 +120,43 @@ export const extractAccidentDetails = async (sceneInput) => {
     : `Analyze a typical road accident: a motorcycle has hit a road divider on a wet road. The rider appears injured and unresponsive. There are visible signs of bleeding. No helmet detected.`;
 
   const requestBody = JSON.stringify({
-    contents: [
-      {
-        parts: [
-          { text: EXTRACTION_PROMPT },
-          { text: userContent }
-        ]
-      }
-    ],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 1024,
-      responseMimeType: 'application/json'
-    }
+    contents: [{ parts: [{ text: EXTRACTION_PROMPT }, { text: userContent }] }],
+    generationConfig: { temperature: 0.2, maxOutputTokens: 1024, responseMimeType: 'application/json' }
   });
 
-  // Try each model in order — stops at first success
   for (const model of GEMINI_MODELS) {
     try {
       console.log(`[Gemini] Trying model: ${model}`);
-      const response = await fetch(geminiUrl(model), {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: requestBody
-      });
+
+      const response = await withTimeout(
+        fetch(geminiUrl(model), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: requestBody
+        })
+      );
 
       if (!response.ok) {
-        const msg = `${response.status} ${response.statusText}`;
-        console.warn(`[Gemini] ${model} failed: ${msg}`);
-        continue; // Try next model
+        console.warn(`[Gemini] ${model} failed: ${response.status}`);
+        continue;
       }
 
       const json = await response.json();
       const rawText = json.candidates?.[0]?.content?.parts?.[0]?.text;
       if (!rawText) { console.warn(`[Gemini] ${model} returned empty response`); continue; }
 
-      const parsed = JSON.parse(rawText);
+      const parsed = validateReport(JSON.parse(rawText));
       console.log(`[Gemini] Extracted via ${model}:`, parsed);
       return parsed;
     } catch (err) {
-      console.warn(`[Gemini] ${model} threw error:`, err.message);
+      if (err.message === 'AI_TIMEOUT') {
+        console.warn(`[Gemini] ${model} timed out after ${AI_TIMEOUT_MS}ms`);
+      } else {
+        console.warn(`[Gemini] ${model} threw error:`, err.message);
+      }
     }
   }
 
-  // All models failed — use mock data
-  console.error('[Gemini] All models failed, using mock data.');
-  return mockData;
+  console.error('[Gemini] All models failed, using validated mock data.');
+  return { ...mockData, confidence_score: 0.1 }; // Low confidence flags fallback to UI
 };

@@ -1,0 +1,13 @@
+# app.yaml for deploying to Google App Engine (Standard Environment)
+runtime: nodejs20
+
+handlers:
+  # Serve all static files with their explicit extensions
+  - url: /(.*\..+)$
+    static_files: dist/\1
+    upload: dist/(.*\..+)$
+
+  # Catch-all router configuration to serve index.html for Single Page Apps (SPA)
+  - url: /.*
+    static_files: dist/index.html
+    upload: dist/index.html

@@ -41,7 +41,7 @@ const Navbar = () => (
         <a href="#how">How it works</a>
         <a href="#privacy">Privacy</a>
       </div>
-      <button className="nav-btn">
+      <button className="nav-btn" aria-label="Login as emergency responder">
         <Lock size={14} /> Responders Login
       </button>
     </div>
@@ -207,11 +207,16 @@ const LandingPage = ({ onStart }) => (
        transition={{ delay: 0.5 }}
        className="cta-stack"
     >
-      <button className="btn-primary btn-record" onClick={onStart}>
-        <Camera size={20} /> Report Accident
+      <button 
+        className="btn-primary btn-record" 
+        onClick={onStart}
+        aria-label="Start reporting an accident — activates camera and microphone"
+        id="report-accident-btn"
+      >
+        <Camera size={20} aria-hidden="true" /> Report Accident
       </button>
-      <button className="btn-primary btn-secondary glass">
-        <FileText size={20} /> View Demo Report
+      <button className="btn-primary btn-secondary glass" aria-label="View a sample incident report">
+        <FileText size={20} aria-hidden="true" /> View Demo Report
       </button>
     </motion.div>
 
@@ -294,8 +299,14 @@ const RecordingPage = ({ location, onComplete }) => {
           <AlertTriangle size={24} className="accent-yellow-icon" />
           <p>Scan the involved vehicles from all angles. Capture license plates if possible.</p>
         </div>
-        <button className="btn-primary large-btn" style={{ background: 'var(--accent-red)', color: 'white' }} onClick={onComplete}>
-          <Zap size={24} /> Stop \u0026 Extract Details
+        <button 
+          className="btn-primary large-btn" 
+          style={{ background: 'var(--accent-red)', color: 'white', minHeight: '64px' }} 
+          onClick={onComplete}
+          aria-label="Stop recording and extract accident details using AI"
+          id="stop-extract-btn"
+        >
+          <Zap size={24} aria-hidden="true" /> Stop &amp; Extract Details
         </button>
       </div>
 

@@ -4,16 +4,23 @@ service cloud.firestore {
 
     // ─── REPORTS ───────────────────────────────────────────────
     match /reports/{reportId} {
-      // Anonymous or signed-in users can create reports freely.
-      // Auth is NOT required to write (session fallback handled in code).
-      allow create: if true;
 
-      // Only the owning user can read or update their own report.
-      // Works for both anonymous UIDs and future linked accounts.
-      allow read, update: if request.auth != null
-                          && request.auth.uid == resource.data.user_id;
+      // Authenticated users (anonymous or signed-in) can create reports.
+      // Session-only users are handled in code with localStorage fallback.
+      allow create: if request.auth != null
+                    && request.resource.data.keys().hasAll(['user_id', 'urgency_level', 'summary', 'time'])
+                    && request.resource.data.user_id == request.auth.uid;
 
-      // Nobody (including the owner) can delete a report (audit trail).
+      // Only the owning user can read their own report.
+      allow read: if request.auth != null
+                  && request.auth.uid == resource.data.user_id;
+
+      // Only the owning user can update, and they cannot change the user_id (immutable).
+      allow update: if request.auth != null
+                    && request.auth.uid == resource.data.user_id
+                    && request.resource.data.user_id == resource.data.user_id;
+
+      // Nobody can delete reports — permanent audit trail.
       allow delete: if false;
     }
 
@@ -24,5 +31,9 @@ service cloud.firestore {
                          && request.auth.uid == userId;
     }
 
+    // ─── CATCH-ALL — block all other access ────────────────────
+    match /{document=**} {
+      allow read, write: if false;
+    }
   }
 }
